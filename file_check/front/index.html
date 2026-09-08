@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Главная страница</title>
+    <style>
+        body {
+            font-family: sans-serif; /* стандартный шрифт без засечек */
+            width: 600px; /* жестко фиксируем ширину страницы */
+            margin: 40px auto; /* центрируем страницу на экране */
+            background-color: #ffffff; /* обычный белый фон */
+            color: #302e2e; /* темносерый цвет текста */
+        }
+        h2 {
+            margin-bottom: 5px; /* прижимаем заголовок к описанию */
+        }
+        .description {
+            color: #6d6b6b; /* серый цвет для подсказки */
+            margin-top: 0; /* убираем лишний отступ сверху */
+            margin-bottom: 25px; /* отступ до начала формы */
+        }
+        .file-box {
+            border: 1px solid #c2bfbf; /* обычная тонкая серая рамка */
+            padding: 20px; /* отступы внутри рамки */
+            margin-bottom: 15px; /* отступ до кнопки */
+            background-color: #dddcdc; /* легкий серый фон для зоны файла */
+        }
+        .file-label {
+            display: block; /* делаем ссылку во всю ширину */
+            cursor: pointer; /* курсор указателя */
+            font-weight: bold; /* делаем текст жирнее */
+        }
+        .file-info {
+            font-weight: normal; /* обычный шрифт для размера */
+            color: #7e7c7c; /* серый цвет текста */
+            margin-top: 5px; /* отступ от имени файла */
+        }
+        .btn {
+            background-color: #4489cf;
+            color: white; /* белый текст */
+            border: none; /* убираем рамку */
+            padding: 10px 20px; /* размеры кнопки */
+            font-size: 15px; /* размер шрифта */
+            cursor: pointer; /* курсор рука */
+        }
+        .btn:hover {
+            background-color: #2269b1; /* голубой чуть темнее при наводке на кнопку */
+        }
+        .btn:disabled {
+            background-color: #aca8a8; /* серая кнопка при отправке */
+            cursor: not-allowed; /* курсор запрета */
+        }
+        .result-box {
+            margin-top: 30px; /* отступ от формы */
+            border-top: 2px solid #333232; /* жирная черная линия сверху */
+            padding-top: 15px; /* отступ после линии */
+            display: none; /* скрыто по умолчанию */
+        }
+        .result-box pre {
+            background-color: #dfdede; /* серый фон для текста ответа */
+            padding: 15px; /* внутренние отступы */
+            border: 1px solid #cac9c9; /* легкая рамка */
+            white-space: pre-wrap; /* перенос длинных строк лога */
+            font-family: monospace; /* шрифт кода */
+        }
+    </style>
+</head>
+<body>
+
+    <h2>Проверка файлов</h2>
+    <p class="description">Выберите Файл</p>
+
+    <form id="upload-form">
+        <div class="file-box">
+            <label class="file-label">
+                <span id="label-title">Нажмите чтобы выбрать файл</span>
+                <div id="label-size" class="file-info">Файл не выбран</div>
+                <input type="file" id="file-input" style="display: none;" required /> 
+            </label>
+        </div>
+
+        <button type="submit" id="btn-send" class="btn">Отправить файл</button>
+    </form>
+
+    <div id="result-block" class="result-box">
+        <h3>Результат анализа:</h3>
+        <pre id="result-text"></pre>
+    </div>
+
+    <script>
+        const fileInput = document.getElementById('file-input');
+        const labelTitle = document.getElementById('label-title');
+        const labelSize = document.getElementById('label-size');
+        const uploadForm = document.getElementById('upload-form');
+        const btnSend = document.getElementById('btn-send');
+        const resultBlock = document.getElementById('result-block');
+        const resultText = document.getElementById('result-text');
+
+        function formatSize(bytes) {
+            if (bytes === 0) return '0 Байт'; // если файл пустой
+            const k = 1024;
+            const units = ['Байт', 'КБ', 'МБ', 'ГБ']; // единицы измерения
+            const i = Math.floor(Math.log(bytes) / Math.log(k)); // находим индекс
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + units[i]; // возвращаем округленный размер
+        }
+
+        fileInput.addEventListener('change', function(e) {
+            const file = e.target.files[0]; // берем первый файл из списка
+            if (file) {
+                labelTitle.textContent = file.name; // выводим имя файла
+                labelSize.textContent = 'Размер: ' + formatSize(file.size); // пишем вес
+            }
+        });
+
+        uploadForm.addEventListener('submit', async function(e) {
+            e.preventDefault(); // стопаем перезагрузку
+
+            const fileData = fileInput.files[0]; // вытаскиваем выбранный файл
+            if (!fileData) return; // выходим если пусто
+
+            const formData = new FormData(); // готовим форму данных
+            formData.append('file', fileData); // прикрепляем файл с ключом file
+
+            btnSend.disabled = true; // отключаем кнопку
+            btnSend.textContent = 'Отправка...'; // меняем надпись
+            resultBlock.style.display = 'none'; // прячем прошлый лог
+
+            try {
+                const response = await fetch('http://localhost:8080/upload', {
+                    method: 'POST', // делаем пост запрос
+                    body: formData // суем форму с файлом
+                });
+
+                const text = await response.text(); // ловим ответ от go
+                resultBlock.style.display = 'block'; // открываем блок
+                resultText.textContent = text; // вставляем логи бэка
+            } catch (err) {
+                resultBlock.style.display = 'block'; // открываем блок для ошибки
+                resultText.textContent = 'Ошибка: не удалось отправить запрос на бэкенд.'; // пишем про ошибку
+            } finally {
+                btnSend.disabled = false; // включаем кнопку обратно
+                btnSend.textContent = 'Отправить файл'; // возвращаем текст
+            }
+        });
+    </script>
+</body>
+</html>

@@ -1,0 +1,8 @@
+{
+  "check": [
+    {"name": "mod_AntiVirus", "enabled": true},
+    {"name": "mod_ControlSum", "enabled": true},
+    {"name": "mod_FileExtenshion", "enabled": true},
+    {"name": "mod_Winteon", "enabled": true}
+  ]
+}

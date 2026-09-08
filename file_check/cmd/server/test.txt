@@ -1,0 +1,292 @@
+package main
+
+import (
+	//"bufio"
+	"context
+	"crypto/sha256
+	"encoding/ex
+	"encoding/
+	"fmt
+	"io
+	"lo
+	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strin
+	"time"
+
+	"github.com/gorilla/mux
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
+)
+
+// Настройки сервера и базы данных
+const (
+	port			= "5000"
+	uploadDir       = "uploads"
+	checkTotalDir   = "checktotal"
+	staticAnalyzers = "static_analyzers"
+	mongoURI        = "mongodb://localhost:27017"
+	dbName          = "uploadsDB"
+	logFile         = "server.log"
+)
+
+// MongoDB коллекция
+var collection *mongo.Collection
+
+// File структура для MongoDB
+type File struct {
+	ID         string    `bson:"_id,omitempty" json:"id"`
+	Name       string    `bson:"name" json:"name"`
+	SavedName  string    `bson:"savedName" json:"savedName"`
+	Size       int64     `bson:"size" json:"size"`
+	Extension  string    `bson:"extension" json:"extension"`
+	Checksum   string    `bson:"checksum" json:"checksum"`
+	UploadDate time.Time `bson:"uploadDate" json:"uploadDate"`
+	Status     string    `bson:"status" json:"status"`
+	StatAnalyz string    `bson:"stat_analyz" json:"stat_analyz"`
+	CheckTotal string    `bson:"check_total" json:"check_total"`
+}
+
+// Главная функция
+func main() {
+	// Подключение к MongoDB
+	client, err := mongo.Connect(context.TODO(), options.Client().ApplyURI(mongoURI))
+	if err != nil {
+		log.Fatalf("Ошибка MongoDB: %v", err)
+	}
+	collection = client.Database(dbName).Collection("files")
+
+	// Создание директорий
+	os.MkdirAll(uploadDir, os.ModePerm)
+
+	// Запуск сервера
+	router := mux.NewRouter()
+	router.Use(corsMiddleware)
+
+	router.HandleFunc("/upload", uploadFileHandler).Methods("POST")
+	router.HandleFunc("/check/{id}", checkFileHandler).Methods("GET")
+	router.HandleFunc("/files", getFilesHandler).Methods("GET")
+	router.HandleFunc("/download/{id}", downloadFileHandler).Methods("GET")
+
+	logToFile("Сервер запущен на http://localhost:" + port)
+	log.Fatal(http.ListenAndServe(":"+port, router))
+}
+
+// Middleware CORS
+func corsMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		if r.Method == "OPTIONS" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// Логирование в файл
+func logToFile(message string) {
+	file, _ := os.OpenFile(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	defer file.Close()
+	log.SetOutput(file)
+	log.Println(message)
+	fmt.Println(message)
+}
+
+// Загрузка файла
+func uploadFileHandler(w http.ResponseWriter, r *http.Request) {
+	r.ParseMultipartForm(10 << 20)
+
+	file, handler, err := r.FormFile("file")
+	if err != nil {
+		http.Error(w, "Ошибка загрузки", http.StatusBadRequest)
+		return
+	}
+	defer file.Close()
+
+	// Сохраняем файл
+	timestamp := time.Now().Format("2006.01.02_15.04.05")
+	savedName := fmt.Sprintf("%s-%s", timestamp, handler.Filename)
+	filePath := filepath.Join(uploadDir, savedName)
+	outFile, _ := os.Create(filePath)
+	defer outFile.Close()
+	io.Copy(outFile, file)
+
+	// Вычисляем SHA-256
+	hash := sha256.New()
+	outFile.Seek(0, 0)
+	io.Copy(hash, outFile)
+	checksum := hex.EncodeToString(hash.Sum(nil))
+
+	// Сохранение в MongoDB
+	fileMeta := File{
+		Name:       handler.Filename,
+		SavedName:  savedName,
+		Size:       handler.Size,
+		Extension:  filepath.Ext(handler.Filename),
+		Checksum:   checksum,
+		UploadDate: time.Now(),
+		Status:     "uploaded",
+	}
+
+	// Вставляем в базу и получаем ID
+	result, err := collection.InsertOne(context.TODO(), fileMeta)
+	if err != nil {
+		http.Error(w, "Ошибка записи в базу", http.StatusInternalServerError)
+		return
+	}
+
+	// Проверяем, является ли InsertedID типом ObjectID
+	if oid, ok := result.InsertedID.(primitive.ObjectID); ok {
+		fileMeta.ID = oid.Hex()
+
+	} else {
+		http.Error(w, "Ошибка преобразования ID", http.StatusInternalServerError)
+		return
+	}
+
+	// Формируем JSON-ответ
+	response := map[string]interface{}{
+		"_id":         fileMeta.ID, // Теперь `_id` находится на верхнем уровне
+		"name":        fileMeta.Name,
+		"savedName":   fileMeta.SavedName,
+		"size":        fileMeta.Size,
+		"extension":   fileMeta.Extension,
+		"checksum":    fileMeta.Checksum,
+		"uploadDate":  fileMeta.UploadDate,
+		"status":      fileMeta.Status,
+		"stat_analyz": fileMeta.StatAnalyz,
+		"check_total": fileMeta.CheckTotal,
+	}
+
+	// Устанавливаем заголовки и отправляем JSON
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+
+	// Логируем и отправляем ответ
+	logToFile("Файл загружен: " + handler.Filename)
+	//json.NewEncoder(w).Encode(fileMeta)
+	json.NewEncoder(w).Encode(response)
+}
+
+func checkFileHandler(w http.ResponseWriter, r *http.Request) {
+	id := mux.Vars(r)["id"]
+
+	// Преобразуем строковый ID в ObjectID
+	objID, err := primitive.ObjectIDFromHex(id)
+	if err != nil {
+		http.Error(w, "Некорректный ID", http.StatusBadRequest)
+		return
+	}
+
+	var file File
+	err = collection.FindOne(context.TODO(), bson.M{"_id": objID}).Decode(&file)
+	if err != nil {
+		http.Error(w, "Файл не найден", http.StatusNotFound)
+		return
+	}
+
+	// Проверяем, существует ли файл на сервере
+	filePath := filepath.Join(uploadDir, file.SavedName)
+	if _, err := os.Stat(filePath); os.IsNotExist(err) {
+		http.Error(w, "Файл отсутствует", http.StatusNotFound)
+		return
+	}
+
+	// Проверяем, не завершена ли уже проверка
+	if file.Status == "finish" {
+		json.NewEncoder(w).Encode(file)
+		return
+	}
+
+	// Запуск анализатора
+	analyzers := map[string]string{
+		".doc": "DOC.exe",
+		".pdf": "PDF.exe",
+		".ppt": "PPT.exe",
+		".rtf": "RTF.exe",
+		".xls": "XLS.exe",
+	}
+
+	if analyzer, exists := analyzers[file.Extension]; exists {
+		cmd := exec.Command(filepath.Join(staticAnalyzers, analyzer), filePath)
+		output, _ := cmd.CombinedOutput()
+		file.StatAnalyz = strings.TrimSpace(string(output))
+	} else {
+		file.StatAnalyz = "No necessary analyzer"
+	}
+
+	// Копируем файл в CheckTotal (не перемещем!)
+	checkTotalPath := fil
+	defer sourceFile.Close(
+	destFile, _ := os.Create(checkTotalPath)
+	defer destFile.Close(
+	io.Copy(destFile, sourceFile)
+
+	// Ожидаем появления лог-файла с таймаутом
+	logFilePath := filepath.Join(checkTotalDir, "results", file.SavedName+".log")
+	timeout := time.After(1 * time.Second)
+	ticker := time.Tick(2 * time.Second)
+
+waitingLoop:
+	for {
+		select {
+		case <-timeout:
+			file.CheckTotal = "Timeout: log file not found"
+			break waitingLoop
+		case <-ticker:
+			if _, err := os.Stat(logFilePath); err == nil {
+				content, _ := os.ReadFile(logFilePath)
+				file.CheckTotal = string(content)
+				break waitingLoop
+			}
+		}
+	}
+
+	// Обновляем статус в MongoDB
+	file.Status = "finish"
+	_, err = collection.UpdateOne(
+		context.TODO(),
+		bson.M{"_id": objID},
+		bson.M{"$set": bson.M{
+			"StatAnalyz": file.StatAnalyz,
+			"CheckTotal": file.CheckTotal,
+			"Status":     file.Status,
+		}},
+	)
+	if err != nil {
+		http.Error(w, "Ошибка обновления в базе", http.StatusInternalServerError)
+		return
+	}
+
+	response := map[string]interface{}{
+		"info":      "Файл отправлен",
+		"fileEntry": file,
+	}
+
+	logToFile("Файл обработан: " + file.Name)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
+// Получение списка файлов
+func getFilesHandler(w http.ResponseWriter, r *http.Request) {
+	cursor, _ := collection.Find(context.TODO(), bson.M{})
+	var files []File
+	cursor.All(context.TODO(), &files)
+	json.NewEncoder(w).Encode(files)
+}
+
+// Скачивание файла
+func downloadFileHandler(w http.ResponseWriter, r *http.Request) {
+	id := mux.Vars(r)["id"]
+	var file File
+	collection.FindOne(context.TODO(), bson.M{"_id": id}).Decode(&file)
+	http.ServeFile(w, r, filepath.Join(uploadDir, file.SavedName))
+}
